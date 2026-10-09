@@ -1,0 +1,7 @@
+requests>=2.31
+pandas>=2.1
+pyarrow>=14
+tqdm>=4.66
+jupyter
+ipywidgets
+truststore>=0.9   # lets Python trust the macOS keychain (needed behind Zscaler)
