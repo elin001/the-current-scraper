@@ -41,11 +41,29 @@ Check `data/scrape.log`, wait a while, then rerun.
 
 `01_scrape.ipynb` calls the same functions. It's handy for small ranges and for inspecting the combined data.
 
+## Monthly updates (GitHub Action)
+
+[`.github/workflows/monthly-scrape.yml`](.github/workflows/monthly-scrape.yml) runs at 12:00 UTC on the 1st of
+every month. It runs `python scraper.py --update`, which:
+
+1. finds the last play date in `data/plays/`,
+2. scrapes from the next day through yesterday (the whole previous month), and
+3. merges the new plays into that year's `data/plays/YYYY.parquet` and commits it.
+
+If a day fails, the Action merges the unbroken run of days before it and keeps that progress.
+The run shows as failed (red), and the next run starts again from the missing day, so the data never has gaps.
+To run it early, open the **Actions** tab, choose **Monthly playlist scrape**, then click **Run workflow**.
+The scrape log for each run is saved as a downloadable artifact.
+
+After a run, `git pull` to get the new data. You can run the same update locally with `.venv/bin/python scraper.py --update`.
+
 ## Output
 
-- `data/raw/YYYY/YYYY-MM-DD.csv`: one file per day (the raw, resumable cache)
-- `data/plays.parquet`: everything combined and deduped. Load it with `pd.read_parquet("data/plays.parquet")`.
-- `data/plays.csv`: the same data as CSV, for Excel or Sheets
+- `data/plays/YYYY.parquet`: **the canonical dataset**. It's committed to git, with one file per year (Central time).
+  Load everything with `pd.read_parquet("data/plays")`.
+- `data/raw/YYYY/YYYY-MM-DD.csv`: one file per day, a local-only resumable cache (not in git)
+- `data/plays.parquet` / `data/plays.csv`: everything combined from `data/raw/` (local only).
+  It's rebuilt by the full scrape or `--combine-only`. It won't include months added by the Action.
 - `data/failed_dates.txt`, `data/scrape.log`
 
 | column | notes |

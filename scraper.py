@@ -9,6 +9,7 @@ Usage (terminal, recommended for the full ~12 hour run):
     python scraper.py --start 2010-01-01 --end 2010-12-31  # one year
     python scraper.py --retry-failed                      # re-try dates that failed
     python scraper.py --combine-only                      # just rebuild data/plays.parquet
+    python scraper.py --update                            # last saved date → yesterday (monthly GitHub Action)
 
 The scraper is resumable: days already saved in data/raw/ are skipped, so you can
 Ctrl-C at any time and re-run the same command later.
@@ -56,6 +57,7 @@ DATA_DIR = Path(__file__).resolve().parent / "data"
 RAW_DIR = DATA_DIR / "raw"
 FAILED_FILE = DATA_DIR / "failed_dates.txt"
 LOG_FILE = DATA_DIR / "scrape.log"
+YEARLY_DIR = DATA_DIR / "plays"  # data/plays/YYYY.parquet, committed to git
 
 # Column order for the output. The first five are the core fields; the rest are
 # every other per-play field the page provides (useful for later enrichment,
@@ -304,13 +306,9 @@ def retry_failed(delay: float = DELAY_SECONDS) -> dict:
 # ----------------------------------------------------------------------------
 # Combine
 # ----------------------------------------------------------------------------
-def combine(write: bool = True):
-    """Merge all daily CSVs into one DataFrame and save data/plays.parquet + data/plays.csv."""
+def read_daily(files: list[Path]):
+    """Read daily CSVs into one typed DataFrame. Returns (df, number of days with 0 plays)."""
     import pandas as pd
-
-    files = sorted(RAW_DIR.glob("*/*.csv"))
-    if not files:
-        raise FileNotFoundError(f"No daily files in {RAW_DIR}. Run the scraper first.")
 
     frames = [pd.read_csv(f, dtype=str, keep_default_na=False, na_values=[""]) for f in files]
     empty_days = sum(len(f) == 0 for f in frames)
@@ -322,6 +320,16 @@ def combine(write: bool = True):
         df[col] = pd.to_numeric(df[col]).astype("Int64")
 
     df = df.drop_duplicates("play_id").sort_values("played_at").reset_index(drop=True)
+    return df, empty_days
+
+
+def combine(write: bool = True):
+    """Merge all daily CSVs into one DataFrame and save data/plays.parquet + data/plays.csv."""
+    files = sorted(RAW_DIR.glob("*/*.csv"))
+    if not files:
+        raise FileNotFoundError(f"No daily files in {RAW_DIR}. Run the scraper first.")
+
+    df, empty_days = read_daily(files)
 
     if write:
         df.to_parquet(DATA_DIR / "plays.parquet", index=False)
@@ -337,6 +345,79 @@ def combine(write: bool = True):
 
 
 # ----------------------------------------------------------------------------
+# Yearly files (committed to git; what the monthly GitHub Action updates)
+# ----------------------------------------------------------------------------
+def year_path(year: int) -> Path:
+    return YEARLY_DIR / f"{year}.parquet"
+
+
+def merge_into_yearly(df):
+    """Add plays to data/plays/YYYY.parquet, one file per year (Central time), deduped on play_id."""
+    import pandas as pd
+
+    YEARLY_DIR.mkdir(parents=True, exist_ok=True)
+    for year, new in df.groupby(df["played_at"].dt.year):
+        path = year_path(year)
+        if path.exists():
+            new = pd.concat([pd.read_parquet(path), new], ignore_index=True)
+        new = new.drop_duplicates("play_id").sort_values("played_at").reset_index(drop=True)
+        new.to_parquet(path, index=False)
+
+
+def write_yearly():
+    """One-time setup: split data/plays.parquet into data/plays/YYYY.parquet."""
+    import pandas as pd
+
+    df = pd.read_parquet(DATA_DIR / "plays.parquet")
+    merge_into_yearly(df)
+    print(f"Wrote {df['played_at'].dt.year.nunique()} yearly files to {YEARLY_DIR}")
+
+
+def last_saved_date() -> date:
+    """Latest play date in the yearly files."""
+    import pandas as pd
+
+    files = sorted(YEARLY_DIR.glob("*.parquet"))
+    if not files:
+        raise FileNotFoundError(f"No yearly files in {YEARLY_DIR}. Run write_yearly() first.")
+    return pd.read_parquet(files[-1], columns=["played_at"])["played_at"].max().date()
+
+
+def update(delay: float = DELAY_SECONDS) -> dict:
+    """Scrape from the day after the last saved play through yesterday, and merge into the yearly files.
+
+    Only an unbroken run of days is merged, so a day that fails can't leave a gap:
+    the next update simply starts again from the first missing day.
+    """
+    start = last_saved_date() + timedelta(days=1)
+    end = date.today() - timedelta(days=1)
+    if start > end:
+        print(f"Already up to date (through {start - timedelta(days=1)}).")
+        return {"complete": True, "new_plays": 0}
+
+    print(f"Updating {start} → {end}")
+    scrape_range(start, end, delay)
+
+    days = []
+    for d in date_list(start, end):
+        if not day_path(d).exists():
+            break
+        days.append(d)
+
+    new_plays = 0
+    if days:
+        df, _ = read_daily([day_path(d) for d in days])
+        new_plays = len(df)
+        if new_plays:
+            merge_into_yearly(df)
+        print(f"Merged {new_plays:,} plays ({days[0]} → {days[-1]}) into {YEARLY_DIR}")
+    complete = len(days) == (end - start).days + 1
+    if not complete:
+        print(f"Stopped before {end}; the next update will resume from the first missing day.")
+    return {"complete": complete, "new_plays": new_plays, "through": days[-1] if days else None}
+
+
+# ----------------------------------------------------------------------------
 # CLI
 # ----------------------------------------------------------------------------
 def main():
@@ -348,7 +429,17 @@ def main():
     ap.add_argument("--retry-failed", action="store_true", help="only re-try dates in data/failed_dates.txt")
     ap.add_argument("--combine-only", action="store_true", help="skip scraping; just build data/plays.parquet")
     ap.add_argument("--no-combine", action="store_true", help="don't build data/plays.parquet after scraping")
+    ap.add_argument("--update", action="store_true",
+                    help="scrape from the last date in data/plays/ through yesterday and merge (used by the monthly GitHub Action)")
+    ap.add_argument("--write-yearly", action="store_true", help="split data/plays.parquet into data/plays/YYYY.parquet")
     args = ap.parse_args()
+
+    if args.update:
+        result = update(args.delay)
+        sys.exit(0 if result["complete"] else 1)
+    if args.write_yearly:
+        write_yearly()
+        return
 
     try:
         if args.retry_failed:

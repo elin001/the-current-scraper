@@ -1,4 +1,7 @@
-data/
+# Local scrape cache + combined files stay out of git...
+data/*
+# ...except the yearly parquet files, which the monthly GitHub Action updates
+!data/plays/
 .venv/
 .ipynb_checkpoints/
 __pycache__/
