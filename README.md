@@ -119,6 +119,7 @@ Run the notebooks with the project's `.venv` kernel.
 | [`01_scrape.ipynb`](01_scrape.ipynb) | Runs the scraper. Ends with a **data dictionary**: what each column means, how complete each field is by year, and what in the log isn't a song. |
 | [`02_songs.ipynb`](02_songs.ipynb) | **Songs:** total and unique songs played, the longest and shortest songs in rotation, the most-played songs overall and by year, and a Billboard-style **running chart**. The chart has a weekly top 100 (ranked on a rolling 4-week window), `hot10("any date")`, every #1 run with the song that replaced it, weeks in the top 10, and a heatmap of one year's top 10. |
 | [`03_artists.ipynb`](03_artists.ipynb) | **Artists:** unique artists, new artists per year, the most-played artists overall and by year, and **89.3 in-studio performances**. That last section estimates who visited the studio most, plus whose session recordings were replayed most. |
+| [`04_musicbrainz.ipynb`](04_musicbrainz.ipynb) | **Release years, genres and artists** (from the MusicBrainz enrichment): how much of the playlist could be matched, how old the songs are and how much is new, top genres and how they've shifted, plays by solo men vs. solo women vs. groups, Minnesota artists' share, where artists are from, and data checks. |
 
 ## Output
 
