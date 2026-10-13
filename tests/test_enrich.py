@@ -400,3 +400,21 @@ def test_build_drops_plays_with_blank_artist_or_title_and_keeps_counts_integer()
 
 def test_pick_credit_treats_plus_as_and():
     assert enrich.pick_credit("florence and the machine", credits(("Florence + the Machine", "f")))[2] == "exact"
+
+
+def test_fetch_wikidata_posts_the_query_so_long_batches_fit():
+    clock = FakeClock()
+    session = FakeSession([])
+    session.posts = []
+
+    def post(url, data=None, headers=None, timeout=None):
+        session.posts.append({"url": url, "data": dict(data or {}), "headers": dict(headers or {})})
+        return FakeResponse(200, {"results": {"bindings": [
+            {"mbid": {"value": PRINCE}, "genderLabel": {"value": "male"}}]}})
+
+    session.post = post
+    ids = [PRINCE] + [f"id-{n}" for n in range(199)]
+    found = enrich.fetch_wikidata(session, ids, enrich.Throttle(1.0, clock=clock.time, sleep=clock.sleep), clock.sleep)
+    assert session.calls == []  # never GET: 200 IDs overflow a URL
+    assert f'"{PRINCE}"' in session.posts[0]["data"]["query"]
+    assert found[PRINCE]["wd_gender"] == "Male"

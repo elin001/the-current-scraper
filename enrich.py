@@ -120,12 +120,13 @@ class Throttle:
         self.last = self.clock()
 
 
-def _retry_get(session, url, params, headers, throttle, sleep, label):
-    """GET with the shared throttle. Returns the response (200) or None (404); retries 429/5xx/network errors."""
+def _retry_request(send, throttle, sleep, label):
+    """Call send() (one HTTP request) under the throttle. Returns the response (200) or None (404);
+    retries 429/5xx/network errors."""
     for attempt in range(MAX_RETRIES + 1):
         throttle.wait()
         try:
-            r = session.get(url, params=params, headers=headers, timeout=TIMEOUT_SECONDS)
+            r = send()
             status = r.status_code
         except requests.exceptions.RequestException as e:
             r, status = None, f"error ({e.__class__.__name__})"
@@ -158,7 +159,9 @@ class MusicBrainz:
         params = {**params, "fmt": fmt}
         accept = "application/json" if fmt == "json" else "text/plain"
         label = path + (f" [{params['query'][:60]}…]" if "query" in params else "")
-        r = _retry_get(self.session, MB_ROOT + path, params, {"Accept": accept}, self.throttle, self.sleep, label)
+        send = lambda: self.session.get(MB_ROOT + path, params=params, headers={"Accept": accept},
+                                        timeout=TIMEOUT_SECONDS)
+        r = _retry_request(send, self.throttle, self.sleep, label)
         if r is None:
             return None
         return r.json() if fmt == "json" else r.text
@@ -564,6 +567,15 @@ SELECT ?mbid ?genderLabel ?dob ?dobPrec ?inc ?incPrec ?placeLabel ?stateLabel ?c
 }"""
 
 
+def fetch_wikidata(session, mb_artist_ids: list[str], throttle: Throttle, sleep=time.sleep) -> dict[str, dict]:
+    """wd_* fields for a batch of MusicBrainz artist IDs. POSTed: 200 IDs make the query too long for a URL."""
+    query = SPARQL % " ".join(f'"{i}"' for i in mb_artist_ids)
+    send = lambda: session.post(WIKIDATA_SPARQL, data={"query": query, "format": "json"},
+                                headers={"Accept": "application/sparql-results+json"}, timeout=TIMEOUT_SECONDS * 2)
+    r = _retry_request(send, throttle, sleep, f"wikidata ({len(mb_artist_ids)} artists)")
+    return parse_wikidata(r.json()["results"]["bindings"]) if r is not None else {}
+
+
 def needs_wikidata(a: pd.DataFrame) -> pd.Series:
     """Matched artists missing gender (people only), a begin date, or a begin area."""
     missing_gender = (a["gender"] == "") & ~a["type"].isin(GROUP_TYPES)
@@ -580,11 +592,7 @@ def step_wikidata(session: requests.Session | None = None):
     todo = cache.loc[needs_wikidata(cache), "id"].tolist()
     log.info("wikidata: %d artists to look up", len(todo))
     for batch in tqdm(list(chunks(todo, WIKIDATA_BATCH)), desc="wikidata", unit="batch"):
-        query = SPARQL % " ".join(f'"{i}"' for i in batch)
-        r = _retry_get(session, WIKIDATA_SPARQL, {"query": query, "format": "json"},
-                       {"Accept": "application/sparql-results+json"}, throttle, time.sleep,
-                       f"wikidata ({len(batch)} artists)")
-        found = parse_wikidata(r.json()["results"]["bindings"]) if r is not None else {}
+        found = fetch_wikidata(session, batch, throttle, time.sleep)
         rows = cache["id"].isin(batch)
         for col in WD_COLUMNS:
             cache.loc[rows, col] = cache.loc[rows, "id"].map(lambda i: found.get(i, {}).get(col, ""))
