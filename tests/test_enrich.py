@@ -418,3 +418,23 @@ def test_fetch_wikidata_posts_the_query_so_long_batches_fit():
     assert session.calls == []  # never GET: 200 IDs overflow a URL
     assert f'"{PRINCE}"' in session.posts[0]["data"]["query"]
     assert found[PRINCE]["wd_gender"] == "Male"
+
+
+def test_step_wikidata_skips_a_failing_batch_and_keeps_going(tmp_path, monkeypatch):
+    def artist(i):
+        row = enrich.parse_artist(i, {"id": i, "name": i, "type": "Person"})  # no gender/date/area → needs Wikidata
+        return row
+    enrich.write_atomic(pd.DataFrame([artist("bad"), artist("good")]), tmp_path / "artists.parquet")
+    monkeypatch.setattr(enrich, "ARTIST_FILE", tmp_path / "artists.parquet")
+    monkeypatch.setattr(enrich, "WIKIDATA_BATCH", 1)
+
+    def fake_fetch(session, ids, throttle, sleep=None):
+        if ids == ["bad"]:
+            raise enrich.MusicBrainzError("500 for wikidata")
+        return {"good": {"wd_gender": "Female", "wd_begin": "1990", "wd_place": "", "wd_state": "", "wd_country": ""}}
+
+    monkeypatch.setattr(enrich, "fetch_wikidata", fake_fetch)
+    enrich.step_wikidata(session=object())
+    out = pd.read_parquet(tmp_path / "artists.parquet").set_index("mb_artist_id")
+    assert out.loc["good", "wd_gender"] == "Female" and bool(out.loc["good", "wd_checked"])
+    assert not bool(out.loc["bad", "wd_checked"])  # left for a later run to retry

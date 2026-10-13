@@ -592,7 +592,11 @@ def step_wikidata(session: requests.Session | None = None):
     todo = cache.loc[needs_wikidata(cache), "id"].tolist()
     log.info("wikidata: %d artists to look up", len(todo))
     for batch in tqdm(list(chunks(todo, WIKIDATA_BATCH)), desc="wikidata", unit="batch"):
-        found = fetch_wikidata(session, batch, throttle, time.sleep)
+        try:
+            found = fetch_wikidata(session, batch, throttle, time.sleep)
+        except MusicBrainzError as e:  # e.g. a query timeout: leave unchecked so a later run retries
+            log.warning("wikidata batch skipped: %s", e)
+            continue
         rows = cache["id"].isin(batch)
         for col in WD_COLUMNS:
             cache.loc[rows, col] = cache.loc[rows, "id"].map(lambda i: found.get(i, {}).get(col, ""))

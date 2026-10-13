@@ -41,6 +41,8 @@ jobs:
         # --jitter waits a random 0–15 min first. A MusicBrainz outage shouldn't block committing plays.
         if: always() && steps.scrape.outcome != 'skipped'
         continue-on-error: true
+        # Leave time for the commit step even if the caches are missing and it tries to fetch everything.
+        timeout-minutes: 45
         run: python enrich.py update --jitter
         env:
           TQDM_MININTERVAL: "30"
