@@ -43,7 +43,7 @@ from scraper import make_session  # importing scraper also sets up truststore (Z
 # ----------------------------------------------------------------------------
 MB_ROOT = "https://musicbrainz.org/ws/2/"
 WIKIDATA_SPARQL = "https://query.wikidata.org/sparql"
-MB_INTERVAL_SECONDS = 1.1  # MusicBrainz allows 1 request/second per IP
+MB_INTERVAL_SECONDS = 1.1  # MusicBrainz allows 1 request/second per IP; counted from the previous response
 WIKIDATA_INTERVAL_SECONDS = 1.0
 SEARCH_BATCH = 100  # MusicBrainz search returns at most 100 results
 WIKIDATA_BATCH = 200
@@ -100,7 +100,8 @@ def setup_logging():
 # HTTP
 # ----------------------------------------------------------------------------
 class Throttle:
-    """Keeps calls at least `interval` seconds apart."""
+    """Keeps calls at least `interval` seconds apart, counted from when the previous one finished
+    (so a slow response can't make two requests arrive close together)."""
 
     def __init__(self, interval: float, clock=time.monotonic, sleep=time.sleep):
         self.interval = interval
@@ -115,6 +116,9 @@ class Throttle:
                 self.sleep(remaining)
         self.last = self.clock()
 
+    def done(self):
+        self.last = self.clock()
+
 
 def _retry_get(session, url, params, headers, throttle, sleep, label):
     """GET with the shared throttle. Returns the response (200) or None (404); retries 429/5xx/network errors."""
@@ -125,6 +129,7 @@ def _retry_get(session, url, params, headers, throttle, sleep, label):
             status = r.status_code
         except requests.exceptions.RequestException as e:
             r, status = None, f"error ({e.__class__.__name__})"
+        throttle.done()
         log.info("GET %s -> %s", label, status)
         if status == 200:
             return r
@@ -203,9 +208,10 @@ def wikidata_date(value, precision) -> str:
 
 
 def loose(s) -> str:
-    """Looser than plays.normalize, for comparing names: also drops punctuation, "&" → "and", leading "the"."""
+    """Looser than plays.normalize, for comparing names: also drops punctuation, "&"/"+" → "and", leading "the"."""
     s = unicodedata.normalize("NFKD", s if isinstance(s, str) else "")
-    s = "".join(c for c in s if not unicodedata.combining(c)).casefold().replace("&", " and ")
+    s = "".join(c for c in s if not unicodedata.combining(c)).casefold()
+    s = re.sub(r"[&+]", " and ", s)
     s = re.sub(r"[^\w\s]", "", s)
     s = re.sub(r"\s+", " ", s).strip()
     return re.sub(r"^the ", "", s)
@@ -365,7 +371,8 @@ def match_artists(plays: pd.DataFrame, rgs: pd.DataFrame) -> pd.DataFrame:
 # Building the tables
 # ----------------------------------------------------------------------------
 def _music(plays: pd.DataFrame) -> pd.DataFrame:
-    return plays[plays["is_music"]]
+    """Music plays that name both a song and an artist."""
+    return plays[plays["is_music"] & plays["artist_key"].notna() & plays["song_key"].notna()]
 
 
 def build_artists(plays, rgs, artists_cache, areas, genres: set[str]) -> pd.DataFrame:

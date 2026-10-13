@@ -96,6 +96,21 @@ def test_every_request_goes_through_the_shared_throttle():
     assert clock.sleeps == [pytest.approx(1.1)]
 
 
+def test_throttle_counts_from_when_the_previous_response_finished():
+    # a slow response must not let the next request go out early
+    client, session, clock = make_client([FakeResponse(200, {"a": 1}), FakeResponse(200, {"b": 1})])
+    real_get = session.get
+
+    def slow_get(*args, **kwargs):
+        clock.now += 0.5
+        return real_get(*args, **kwargs)
+
+    session.get = slow_get
+    client.get("artist/x")
+    client.get("artist/y")
+    assert clock.sleeps == [pytest.approx(1.1)]
+
+
 def test_id_query_ors_ids_on_one_field():
     assert enrich.id_query("rgid", ["a", "b"]) == "rgid:a OR rgid:b"
 
@@ -370,3 +385,18 @@ def test_build_skips_non_music_plays():
     plays = plays_frame()
     plays.loc[plays["artist"] == "Nobody Known", "is_music"] = False
     assert "Nobody Known" not in set(enrich.build_artists(plays, rgs, artists, areas, GENRES)["artist"])
+
+
+def test_build_drops_plays_with_blank_artist_or_title_and_keeps_counts_integer():
+    rgs, artists, areas = caches()
+    plays = plays_frame()
+    blank = plays.iloc[[0]].assign(artist=None, title=None, artist_key=None, song_key=None)
+    plays = pd.concat([plays, blank], ignore_index=True)
+    artist_table = enrich.build_artists(plays, rgs, artists, areas, GENRES)
+    songs = enrich.build_songs(plays, rgs, artist_table, GENRES)
+    assert len(artist_table) == 3 and len(songs) == 3
+    assert artist_table["plays"].dtype.kind == "i" and songs["plays"].dtype.kind == "i"
+
+
+def test_pick_credit_treats_plus_as_and():
+    assert enrich.pick_credit("florence and the machine", credits(("Florence + the Machine", "f")))[2] == "exact"
