@@ -2,7 +2,12 @@
 data/*
 # ...except the yearly parquet files, which the monthly GitHub Action updates
 !data/plays/
+# ...and the MusicBrainz enrichment: raw API cache + the built song/artist tables
+!data/musicbrainz/
+!data/songs.parquet
+!data/artists.parquet
 .venv/
 .ipynb_checkpoints/
 __pycache__/
+.pytest_cache/
 .DS_Store

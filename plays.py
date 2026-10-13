@@ -2,8 +2,10 @@
 Load The Current's playlist dataset (data/plays/YYYY.parquet) with a few helper
 columns that the analysis notebooks share.
 
-    from plays import load_plays
+    from plays import load_plays, load_songs, load_artists
     df = load_plays()
+    songs = load_songs()      # one row per song, with MusicBrainz release date + genres (see enrich.py)
+    artists = load_artists()  # one row per artist, with MusicBrainz/Wikidata gender, birth date/place
 """
 
 from pathlib import Path
@@ -11,6 +13,8 @@ from pathlib import Path
 import pandas as pd
 
 DATA_DIR = Path(__file__).resolve().parent / "data" / "plays"
+SONGS_FILE = DATA_DIR.parent / "songs.parquet"
+ARTISTS_FILE = DATA_DIR.parent / "artists.parquet"
 
 # The playlist log isn't only songs: syndicated shows are logged in segments, full
 # concerts and specials get one long entry, and hosts log interviews, promos and
@@ -29,7 +33,7 @@ NOT_MUSIC_ARTIST = r"^(?:hosted by|host|with) |interview"
 MAX_SONG_MINUTES = 20  # longer entries are shows/concerts, not songs
 
 
-def _normalize(s: pd.Series) -> pd.Series:
+def normalize(s: pd.Series) -> pd.Series:
     """Casefold, drop accents (Poliça → polica) and collapse whitespace."""
     return (
         s.str.normalize("NFKD")
@@ -53,8 +57,8 @@ def load_plays() -> pd.DataFrame:
     parts = df["duration"].str.split(":", expand=True).astype(float)
     df["seconds"] = (parts[0] * 60 + parts[1]).where(lambda s: s > 0)
 
-    df["artist_key"] = _normalize(df["artist"])
-    df["song_key"] = _normalize(df["title"]) + "|" + df["artist_key"]
+    df["artist_key"] = normalize(df["artist"])
+    df["song_key"] = normalize(df["title"]) + "|" + df["artist_key"]
 
     looks_like_program = (
         df["title"].str.contains(NOT_MUSIC_TITLE, case=False, na=False)
@@ -63,6 +67,16 @@ def load_plays() -> pd.DataFrame:
     )
     df["is_music"] = ~looks_like_program
     return df
+
+
+def load_songs() -> pd.DataFrame:
+    """data/songs.parquet, built by `python enrich.py build`."""
+    return pd.read_parquet(SONGS_FILE)
+
+
+def load_artists() -> pd.DataFrame:
+    """data/artists.parquet, built by `python enrich.py build`."""
+    return pd.read_parquet(ARTISTS_FILE)
 
 
 def display_names(df: pd.DataFrame, key: str, cols: list[str]) -> pd.DataFrame:

@@ -2,12 +2,13 @@ name: Monthly playlist scrape
 
 on:
   schedule:
-    # 12:00 UTC on the 1st of each month (6–7am Central), so the previous month is complete.
-    - cron: "0 12 1 * *"
+    # 12:37 UTC on the 1st of each month (6–7am Central), so the previous month is complete.
+    # Off the top of the hour on purpose: MusicBrainz asks clients not to fire at synchronized times.
+    - cron: "37 12 1 * *"
   workflow_dispatch: # lets you run it by hand from the Actions tab
 
 permissions:
-  contents: write # to commit the updated data/plays/*.parquet
+  contents: write # to commit the updated data/plays/*.parquet and enrichment tables
 
 concurrency:
   group: monthly-scrape
@@ -34,6 +35,16 @@ jobs:
         env:
           TQDM_MININTERVAL: "30" # keep the Actions log readable
 
+      - name: Enrich new songs/artists from MusicBrainz + Wikidata
+        id: enrich
+        # Only fetches album/artist IDs that aren't cached yet, then rebuilds the song/artist tables.
+        # --jitter waits a random 0–15 min first. A MusicBrainz outage shouldn't block committing plays.
+        if: always() && steps.scrape.outcome != 'skipped'
+        continue-on-error: true
+        run: python enrich.py update --jitter
+        env:
+          TQDM_MININTERVAL: "30"
+
       - name: Commit new data
         # Commit even if the scrape stopped early, so partial progress is kept;
         # the next run resumes from the first missing day.
@@ -42,8 +53,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
           git add data/plays
+          for f in data/musicbrainz data/songs.parquet data/artists.parquet; do
+            if [ -e "$f" ]; then git add "$f"; fi
+          done
           if git diff --cached --quiet; then
-            echo "No new plays to commit."
+            echo "No new data to commit."
           else
             THROUGH=$(python -c "import scraper; print(scraper.last_saved_date())")
             git commit -m "Monthly scrape: plays through $THROUGH"
@@ -54,9 +68,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: scrape-log
+          name: scrape-logs
           path: |
             data/scrape.log
             data/failed_dates.txt
+            data/enrich.log
           if-no-files-found: ignore
           retention-days: 30
